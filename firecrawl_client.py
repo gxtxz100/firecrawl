@@ -36,7 +36,7 @@ from datetime import datetime
 
 try:
     from firecrawl import Firecrawl
-    from firecrawl.v2.types import Document, CrawlJob
+    from firecrawl.v2.types import Document, CrawlJob, ScrapeOptions
 except ImportError:
     try:
         # 尝试从本地路径导入（开发环境）
@@ -47,7 +47,7 @@ except ImportError:
         if os.path.exists(sdk_path) and sdk_path not in sys.path:
             sys.path.insert(0, sdk_path)
         from firecrawl import Firecrawl
-        from firecrawl.v2.types import Document, CrawlJob
+        from firecrawl.v2.types import Document, CrawlJob, ScrapeOptions
     except ImportError as e:
         print("错误：未找到 firecrawl 库。")
         print("请确保：")
@@ -435,6 +435,106 @@ class FirecrawlClient:
     def batch_scrape(self, urls: List[str], **kwargs) -> List['网页结果']:
         """批量抓取（英文方法）"""
         return self.批量抓取(urls, **kwargs)
+    
+    def 提取文章信息(
+        self,
+        url: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        提取文章的核心信息：标题、作者、发表时间、主文
+        
+        参数:
+            url: 要提取的文章 URL
+            **kwargs: 其他可选参数
+        
+        返回:
+            包含标题、作者、发表时间、主文的字典
+        
+        示例:
+            article = client.提取文章信息("https://example.com/article")
+            print(f"标题: {article['title']}")
+            print(f"作者: {article['author']}")
+            print(f"发表时间: {article['publish_time']}")
+            print(f"主文: {article['content']}")
+        """
+        # 定义提取的 JSON Schema
+        schema = {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "文章标题"
+                },
+                "author": {
+                    "type": "string",
+                    "description": "文章作者，如果找不到则返回空字符串"
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "文章发表时间，格式为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS，如果找不到则返回空字符串"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "文章正文内容，去除导航栏、页脚、广告等无关信息，只保留正文"
+                }
+            },
+            "required": ["title", "content"]
+        }
+        
+        # 定义提取提示
+        prompt = (
+            "从网页中提取以下信息：\n"
+            "1. 标题：文章的标题\n"
+            "2. 作者：文章的作者（如果找不到则返回空字符串）\n"
+            "3. 发表时间：文章的发表或更新时间（格式：YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS，如果找不到则返回空字符串）\n"
+            "4. 主文：文章的正文内容，去除所有无关信息（导航栏、页脚、广告、侧边栏、评论等），只保留正文内容\n\n"
+            "注意：只提取上述四个字段，其他信息不要提取。"
+        )
+        
+        try:
+            print(f"正在提取文章信息: {url}")
+            print("这可能需要一些时间，请稍候...")
+            
+            # 创建 ScrapeOptions 对象
+            scrape_options = ScrapeOptions(
+                formats=["markdown"],
+                only_main_content=True
+            )
+            
+            # 使用 extract API 提取结构化数据
+            extract_response = self._client.extract(
+                urls=[url],
+                prompt=prompt,
+                schema=schema,
+                scrape_options=scrape_options,
+                **kwargs
+            )
+            
+            # 检查提取结果
+            if hasattr(extract_response, 'data') and extract_response.data:
+                data = extract_response.data
+                # 如果 data 是列表，取第一个元素
+                if isinstance(data, list) and len(data) > 0:
+                    data = data[0]
+                
+                # 确保返回的字典包含所有必需字段
+                result = {
+                    "title": data.get("title", ""),
+                    "author": data.get("author", ""),
+                    "publish_time": data.get("publish_time", ""),
+                    "content": data.get("content", ""),
+                    "url": url
+                }
+                
+                print("✓ 提取成功")
+                return result
+            else:
+                raise RuntimeError("提取结果为空")
+        
+        except Exception as e:
+            error_msg = str(e)
+            raise RuntimeError(f"提取文章信息失败: {error_msg}")
 
 
 class 网页结果:

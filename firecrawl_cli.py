@@ -9,7 +9,10 @@ Firecrawl 友好客户端 - 交互式命令行工具
 
 import os
 import sys
+import json
+import signal
 from typing import Optional
+from datetime import datetime
 
 # 检查虚拟环境
 def check_venv():
@@ -50,12 +53,13 @@ def print_menu():
     print("请选择功能：")
     print("-" * 60)
     print("1. 📄 抓取单个网页")
-    print("2. 🕷️  爬取整个网站")
-    print("3. 🔍 搜索网页")
-    print("4. 🗺️  获取网站地图（所有链接）")
-    print("5. 📦 批量抓取多个网页")
-    print("6. ⚙️  设置 API 密钥")
-    print("7. ℹ️  查看使用说明")
+    print("2. 📰 提取文章信息（仅标题、作者、时间、正文）⭐")
+    print("3. 🕷️  爬取整个网站")
+    print("4. 🔍 搜索网页")
+    print("5. 🗺️  获取网站地图（所有链接）")
+    print("6. 📦 批量抓取多个网页")
+    print("7. ⚙️  设置 API 密钥")
+    print("8. ℹ️  查看使用说明")
     print("0. 🚪 退出")
     print("-" * 60)
 
@@ -116,6 +120,77 @@ def set_api_key():
     print("\n提示: 要永久保存，请运行:")
     print(f"  export FIRECRAWL_API_KEY='{api_key}'")
     print("  或创建 .env 文件")
+
+
+def extract_article():
+    """提取文章信息（仅标题、作者、时间、正文）"""
+    print("\n" + "=" * 60)
+    print("📰 提取文章信息")
+    print("=" * 60)
+    print("将提取：标题、作者、发表时间、正文内容")
+    print("（自动去除导航栏、页脚、广告等无关信息）")
+    print("=" * 60)
+    
+    if not check_api_key():
+        return
+    
+    url = get_user_input("请输入文章 URL")
+    
+    print(f"\n正在提取文章信息: {url}")
+    print("这可能需要一些时间，请稍候...")
+    
+    try:
+        client = FirecrawlClient()
+        article = client.提取文章信息(url)
+        
+        print("\n" + "=" * 60)
+        print("✓ 提取成功！")
+        print("=" * 60)
+        
+        print(f"\n📌 标题: {article.get('title', '未找到')}")
+        print(f"✍️  作者: {article.get('author', '未找到') or '未找到'}")
+        print(f"📅 发表时间: {article.get('publish_time', '未找到') or '未找到'}")
+        print(f"🔗 URL: {article.get('url', url)}")
+        
+        content = article.get('content', '')
+        if content:
+            print(f"\n📝 正文内容 ({len(content)} 字符):")
+            print("-" * 60)
+            # 显示前 500 字符预览
+            preview = content[:500]
+            print(preview)
+            if len(content) > 500:
+                print(f"... (还有 {len(content) - 500} 字符)")
+            print("-" * 60)
+        else:
+            print("\n⚠️  未找到正文内容")
+        
+        # 询问是否保存
+        save = input("\n是否保存到文件？(y/N): ").strip().lower()
+        if save == 'y':
+            # 生成文件名
+            safe_title = "".join(c for c in article.get('title', 'article') if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+            safe_title = safe_title.replace(' ', '_')
+            filename = f"article_{safe_title}.md"
+            
+            # 保存内容
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(f"# {article.get('title', '无标题')}\n\n")
+                    if article.get('author'):
+                        f.write(f"**作者**: {article.get('author')}\n\n")
+                    if article.get('publish_time'):
+                        f.write(f"**发表时间**: {article.get('publish_time')}\n\n")
+                    f.write(f"**URL**: {article.get('url', url)}\n\n")
+                    f.write("---\n\n")
+                    f.write(article.get('content', ''))
+                print(f"\n✓ 已保存到: {filename}")
+                print(f"  完整路径: {os.path.abspath(filename)}")
+            except Exception as e:
+                print(f"\n❌ 保存失败: {e}")
+    
+    except Exception as e:
+        print(f"\n❌ 错误: {e}")
 
 
 def scrape_single_page():
@@ -231,77 +306,282 @@ def search_web():
     query = get_user_input("请输入搜索关键词")
     limit = int(get_user_input("返回结果数量", "5"))
     
-    # 询问是否抓取内容
-    print("\n是否抓取搜索结果的内容？")
+    # 询问处理方式
+    print("\n请选择处理方式：")
     print("1. 仅显示链接和描述（快速）")
     print("2. 抓取完整内容（较慢，但可以保存）")
-    scrape_choice = input("请选择 (1/2, 默认: 1): ").strip() or "1"
-    scrape_content = (scrape_choice == "2")
+    print("3. 提取文章信息（仅标题、作者、时间、正文）⭐")
+    mode_choice = input("请选择 (1/2/3, 默认: 1): ").strip() or "1"
     
     print(f"\n正在搜索: {query}")
-    if scrape_content:
-        print("正在抓取内容，这可能需要一些时间...")
-    else:
-        print("请稍候...")
+    print("请稍候...")
     
     try:
         client = FirecrawlClient()
-        results = client.搜索网页(query, 结果数量=limit, 抓取内容=scrape_content)
+        
+        # 先获取搜索结果（不抓取内容）
+        results = client.搜索网页(query, 结果数量=limit, 抓取内容=False)
         
         print("\n" + "=" * 60)
         print(f"✓ 找到 {len(results)} 个结果")
         print("=" * 60)
         
+        # 显示搜索结果列表
         for i, result in enumerate(results, 1):
             print(f"\n{i}. {result.get('title', '无标题')}")
             print(f"   URL: {result.get('url', '')}")
             if result.get('description'):
                 print(f"   描述: {result.get('description')}")
-            if result.get('content'):
-                content_len = len(result.get('content', ''))
-                print(f"   内容长度: {content_len} 字符")
         
-        # 如果抓取了内容，询问是否保存
-        if scrape_content and any(r.get('content') for r in results):
-            save = input(f"\n是否保存所有 {len(results)} 个搜索结果？(y/N): ").strip().lower()
-            if save == 'y':
-                # 创建保存目录
-                save_dir = "search_results"
-                os.makedirs(save_dir, exist_ok=True)
+        # 根据用户选择处理
+        if mode_choice == "1":
+            # 仅显示，不做其他处理
+            print("\n✓ 搜索完成（仅显示链接和描述）")
+            return
+        
+        elif mode_choice == "2":
+            # 抓取完整内容
+            print(f"\n正在抓取 {len(results)} 个网页的完整内容...")
+            print("这可能需要一些时间，请稍候...")
+            
+            # 重新搜索并抓取内容
+            results_with_content = client.搜索网页(query, 结果数量=limit, 抓取内容=True)
+            
+            print("\n" + "=" * 60)
+            print("✓ 抓取完成")
+            print("=" * 60)
+            
+            for i, result in enumerate(results_with_content, 1):
+                print(f"\n{i}. {result.get('title', '无标题')}")
+                print(f"   URL: {result.get('url', '')}")
+                if result.get('content'):
+                    content_len = len(result.get('content', ''))
+                    print(f"   内容长度: {content_len} 字符")
+            
+            # 询问是否保存
+            if any(r.get('content') for r in results_with_content):
+                save = input(f"\n是否保存所有 {len(results_with_content)} 个搜索结果？(y/N): ").strip().lower()
+                if save == 'y':
+                    save_dir = "search_results"
+                    os.makedirs(save_dir, exist_ok=True)
+                    
+                    safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                    safe_query = safe_query.replace(' ', '_')
+                    
+                    print(f"\n正在保存到目录: {save_dir}/")
+                    saved_count = 0
+                    
+                    for i, result in enumerate(results_with_content, 1):
+                        if result.get('content'):
+                            safe_title = "".join(c for c in result.get('title', '无标题') if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                            safe_title = safe_title.replace(' ', '_')
+                            filename = os.path.join(save_dir, f"{i:03d}_{safe_query}_{safe_title}.md")
+                            
+                            try:
+                                with open(filename, 'w', encoding='utf-8') as f:
+                                    f.write(f"# {result.get('title', '无标题')}\n\n")
+                                    f.write(f"**URL**: {result.get('url', '')}\n\n")
+                                    if result.get('description'):
+                                        f.write(f"**描述**: {result.get('description')}\n\n")
+                                    f.write("---\n\n")
+                                    f.write(result.get('content', ''))
+                                print(f"  ✓ 已保存: {filename}")
+                                saved_count += 1
+                            except Exception as e:
+                                print(f"  ✗ 保存失败 {filename}: {e}")
+                    
+                    if saved_count > 0:
+                        print(f"\n✓ 成功保存 {saved_count} 个结果到 {save_dir}/ 目录")
+                        print(f"  完整路径: {os.path.abspath(save_dir)}")
+        
+        elif mode_choice == "3":
+            # 提取文章信息（仅标题、作者、时间、正文）
+            print(f"\n正在提取 {len(results)} 个结果的文章信息...")
+            print("（仅提取：标题、作者、发表时间、正文）")
+            print("💡 提示：结果会自动保存，可随时按 Ctrl+C 安全退出")
+            print("=" * 60)
+            
+            # 准备保存目录和文件名
+            save_dir = "search_results"
+            os.makedirs(save_dir, exist_ok=True)
+            
+            safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+            safe_query = safe_query.replace(' ', '_')
+            
+            # 进度文件路径
+            progress_file = os.path.join(save_dir, f".progress_{safe_query}.json")
+            
+            # 加载已有进度（断点续传）
+            processed_urls = set()
+            saved_count = 0
+            
+            if os.path.exists(progress_file):
+                try:
+                    with open(progress_file, 'r', encoding='utf-8') as f:
+                        progress_data = json.load(f)
+                        processed_urls = set(progress_data.get('processed_urls', []))
+                        saved_count = progress_data.get('saved_count', 0)
+                    print(f"📂 检测到进度文件，已处理 {len(processed_urls)} 个，将继续处理剩余 {len(results) - len(processed_urls)} 个")
+                except:
+                    pass
+            
+            extracted_articles = []
+            failed_urls = []
+            
+            # 定义保存函数
+            def save_article(item_data, index):
+                """保存单个文章"""
+                article = item_data['article']
+                safe_title = "".join(c for c in article.get('title', '无标题') if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                safe_title = safe_title.replace(' ', '_')
+                filename = os.path.join(save_dir, f"{index:03d}_{safe_query}_{safe_title}.md")
                 
-                # 清理查询字符串作为文件名
-                safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
-                safe_query = safe_query.replace(' ', '_')
+                try:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(f"# {article.get('title', '无标题')}\n\n")
+                        if article.get('author'):
+                            f.write(f"**作者**: {article.get('author')}\n\n")
+                        if article.get('publish_time'):
+                            f.write(f"**发表时间**: {article.get('publish_time')}\n\n")
+                        f.write(f"**URL**: {article.get('url', '')}\n\n")
+                        f.write("---\n\n")
+                        f.write(article.get('content', ''))
+                    return True, filename
+                except Exception as e:
+                    return False, str(e)
+            
+            # 定义保存进度函数
+            def save_progress():
+                """保存进度"""
+                try:
+                    progress_data = {
+                        'query': query,
+                        'processed_urls': list(processed_urls),
+                        'saved_count': saved_count,
+                        'last_update': datetime.now().isoformat()
+                    }
+                    with open(progress_file, 'w', encoding='utf-8') as f:
+                        json.dump(progress_data, f, ensure_ascii=False, indent=2)
+                except:
+                    pass
+            
+            # 定义中断处理函数
+            def handle_interrupt(signum, frame):
+                """处理中断信号"""
+                print(f"\n\n⚠️  检测到中断信号，正在保存已提取的结果...")
+                save_progress()
+                if extracted_articles:
+                    print(f"✓ 已保存 {saved_count} 个结果")
+                    print(f"  保存目录: {os.path.abspath(save_dir)}")
+                    print(f"  进度文件: {progress_file}")
+                    print(f"\n💡 提示：下次运行时会自动从断点继续")
+                print("\n👋 程序已安全退出")
+                sys.exit(0)
+            
+            # 注册中断处理（Windows 兼容）
+            try:
+                signal.signal(signal.SIGINT, handle_interrupt)
+            except (AttributeError, ValueError):
+                # Windows 上可能不支持某些信号
+                pass
+            
+            # 开始提取
+            start_time = datetime.now()
+            
+            for i, result in enumerate(results, 1):
+                url = result.get('url', '')
+                if not url:
+                    continue
                 
-                print(f"\n正在保存到目录: {save_dir}/")
-                saved_count = 0
+                # 跳过已处理的URL
+                if url in processed_urls:
+                    print(f"[{i}/{len(results)}] ⏭️  已处理，跳过: {url[:60]}...")
+                    continue
                 
-                for i, result in enumerate(results, 1):
-                    if result.get('content'):
-                        # 生成文件名
-                        safe_title = "".join(c for c in result.get('title', '无标题') if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
-                        safe_title = safe_title.replace(' ', '_')
-                        filename = os.path.join(save_dir, f"{i:03d}_{safe_query}_{safe_title}.md")
+                # 显示进度（简化输出以提高速度）
+                elapsed = (datetime.now() - start_time).total_seconds()
+                avg_time = elapsed / max(saved_count, 1)
+                remaining = len(results) - i + 1
+                estimated_time = avg_time * remaining
+                print(f"[{i}/{len(results)}] 提取中... (已保存: {saved_count}, 预计剩余: {int(estimated_time)}秒) {url[:50]}...")
+                
+                try:
+                    article = client.提取文章信息(url)
+                    
+                    # 立即保存
+                    success, result_info = save_article({
+                        'index': i,
+                        'original': result,
+                        'article': article
+                    }, i)
+                    
+                    if success:
+                        extracted_articles.append({
+                            'index': i,
+                            'original': result,
+                            'article': article
+                        })
+                        processed_urls.add(url)
+                        saved_count += 1
+                        # 每5个保存一次进度
+                        if saved_count % 5 == 0:
+                            save_progress()
+                        print(f"  ✓ 提取并保存成功: {os.path.basename(result_info)}")
+                    else:
+                        print(f"  ✗ 保存失败: {result_info}")
+                        failed_urls.append({'url': url, 'error': f'保存失败: {result_info}'})
                         
-                        # 保存内容
-                        try:
-                            with open(filename, 'w', encoding='utf-8') as f:
-                                f.write(f"# {result.get('title', '无标题')}\n\n")
-                                f.write(f"**URL**: {result.get('url', '')}\n\n")
-                                if result.get('description'):
-                                    f.write(f"**描述**: {result.get('description')}\n\n")
-                                f.write("---\n\n")
-                                f.write(result.get('content', ''))
-                            print(f"  ✓ 已保存: {filename}")
-                            saved_count += 1
-                        except Exception as e:
-                            print(f"  ✗ 保存失败 {filename}: {e}")
-                
-                if saved_count > 0:
-                    print(f"\n✓ 成功保存 {saved_count} 个结果到 {save_dir}/ 目录")
-                    print(f"  完整路径: {os.path.abspath(save_dir)}")
-                else:
-                    print("\n⚠️  没有内容可保存")
+                except KeyboardInterrupt:
+                    # 用户中断
+                    raise
+                except Exception as e:
+                    error_msg = str(e)[:100]
+                    print(f"  ✗ 提取失败: {error_msg}")
+                    failed_urls.append({'url': url, 'error': error_msg})
+                    # 即使失败也记录，避免重复尝试
+                    processed_urls.add(url)
+                    save_progress()
+            
+            # 保存最终进度
+            save_progress()
+            
+            # 删除进度文件（任务完成）
+            if os.path.exists(progress_file):
+                try:
+                    os.remove(progress_file)
+                except:
+                    pass
+            
+            # 显示提取结果摘要
+            print("\n" + "=" * 60)
+            print(f"✓ 提取完成！成功: {len(extracted_articles)}, 失败: {len(failed_urls)}")
+            print(f"✓ 已保存 {saved_count} 个结果到 {save_dir}/ 目录")
+            print("=" * 60)
+            
+            # 显示前5个结果预览
+            if extracted_articles:
+                print("\n前5个结果预览:")
+                for item in extracted_articles[:5]:
+                    article = item['article']
+                    print(f"\n{item['index']}. {article.get('title', '无标题')[:50]}")
+                    if article.get('author'):
+                        print(f"   作者: {article.get('author')}")
+                    if article.get('content'):
+                        content_len = len(article.get('content', ''))
+                        print(f"   正文: {content_len} 字符")
+            
+            if failed_urls and len(failed_urls) <= 10:
+                print(f"\n⚠️  以下 {len(failed_urls)} 个 URL 提取失败:")
+                for failed in failed_urls[:10]:
+                    print(f"   - {failed['url'][:60]}...")
+            elif failed_urls:
+                print(f"\n⚠️  共 {len(failed_urls)} 个 URL 提取失败（仅显示前10个）:")
+                for failed in failed_urls[:10]:
+                    print(f"   - {failed['url'][:60]}...")
+            
+            if saved_count > 0:
+                print(f"\n📁 所有结果已自动保存到: {os.path.abspath(save_dir)}")
+                print(f"   共 {saved_count} 个文件")
     
     except Exception as e:
         print(f"\n❌ 错误: {e}")
@@ -395,29 +675,37 @@ Firecrawl 友好客户端使用说明
    - 选择输出格式（Markdown/HTML）
    - 可以保存结果到文件
 
-2. 爬取整个网站
+2. 提取文章信息 ⭐
+   - 仅提取：标题、作者、发表时间、正文
+   - 自动去除无关信息（导航栏、页脚、广告等）
+   - 适合提取新闻、博客等文章内容
+
+3. 爬取整个网站
    - 输入起始 URL
    - 设置最多爬取页面数
    - 可以保存所有页面
 
-3. 搜索网页
+4. 搜索网页
    - 输入搜索关键词
    - 设置返回结果数量
-   - 选择是否抓取内容
-   - 可以保存所有搜索结果到文件
+   - 选择处理方式：
+     * 仅显示链接和描述（快速）
+     * 抓取完整内容（可保存）
+     * 提取文章信息（仅标题、作者、时间、正文）⭐
+   - 可以保存所有结果到文件
    - 保存位置: search_results/ 目录
 
-4. 获取网站地图
+5. 获取网站地图
    - 输入网站 URL
    - 获取网站所有链接
    - 显示链接列表
 
-5. 批量抓取
+6. 批量抓取
    - 输入多个 URL
    - 批量抓取所有网页
    - 显示所有结果
 
-6. 设置 API 密钥
+7. 设置 API 密钥
    - 设置 Firecrawl API 密钥
    - 获取密钥: https://firecrawl.dev
 
@@ -448,7 +736,7 @@ def main():
         
         print_menu()
         
-        choice = input("\n请选择 (0-7): ").strip()
+        choice = input("\n请选择 (0-8): ").strip()
         
         if choice == "0":
             print("\n👋 再见！")
@@ -456,16 +744,18 @@ def main():
         elif choice == "1":
             scrape_single_page()
         elif choice == "2":
-            crawl_website()
+            extract_article()
         elif choice == "3":
-            search_web()
+            crawl_website()
         elif choice == "4":
-            get_site_map()
+            search_web()
         elif choice == "5":
-            batch_scrape()
+            get_site_map()
         elif choice == "6":
-            set_api_key()
+            batch_scrape()
         elif choice == "7":
+            set_api_key()
+        elif choice == "8":
             show_help()
         else:
             print("\n❌ 无效选择，请重新输入")
@@ -478,7 +768,9 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n👋 程序已退出")
+        print("\n\n⚠️  程序被中断")
+        print("💡 提示：如果正在提取文章，已保存的结果不会丢失")
+        print("👋 程序已退出")
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ 发生错误: {e}")
