@@ -129,19 +129,35 @@ def extract_article():
     print("=" * 60)
     print("将提取：标题、作者、发表时间、正文内容")
     print("（自动去除导航栏、页脚、广告等无关信息）")
+    print("💡 提示：使用本地提取，不需要 API 密钥 ⭐")
     print("=" * 60)
-    
-    if not check_api_key():
-        return
     
     url = get_user_input("请输入文章 URL")
     
+    # 询问使用哪种提取方式
+    api_key = os.getenv("FIRECRAWL_API_KEY")
+    if api_key:
+        print("\n请选择提取方式：")
+        print("1. 本地提取（免费，不需要 API 密钥）⭐")
+        print("2. Firecrawl API 提取（需要 API 密钥，更准确）")
+        extract_type = input("请选择 (1/2, 默认: 1): ").strip() or "1"
+        use_local = (extract_type == "1")
+    else:
+        use_local = True
+        print("\n💡 未设置 API 密钥，将使用本地提取（免费）")
+    
     print(f"\n正在提取文章信息: {url}")
-    print("这可能需要一些时间，请稍候...")
+    if use_local:
+        print("💡 使用本地提取（不需要 API 密钥）")
+    print("请稍候...")
     
     try:
-        client = FirecrawlClient()
-        article = client.提取文章信息(url)
+        # 如果使用本地提取，不需要 API 密钥；否则需要
+        if use_local:
+            client = FirecrawlClient(api_key=None)
+        else:
+            client = FirecrawlClient()
+        article = client.提取文章信息(url, 使用本地提取=use_local)
         
         print("\n" + "=" * 60)
         print("✓ 提取成功！")
@@ -300,27 +316,52 @@ def search_web():
     print("🔍 搜索网页")
     print("=" * 60)
     
-    if not check_api_key():
-        return
-    
     query = get_user_input("请输入搜索关键词")
     limit = int(get_user_input("返回结果数量", "5"))
+    
+    # 询问使用哪种搜索方式
+    print("\n请选择搜索方式：")
+    print("1. 免费搜索（DuckDuckGo，不需要 API 密钥）⭐")
+    print("2. Firecrawl API 搜索（需要 API 密钥，功能更强大）")
+    search_type = input("请选择 (1/2, 默认: 1): ").strip() or "1"
+    
+    use_free_search = (search_type == "1")
+    
+    # 如果使用 Firecrawl API，检查 API 密钥
+    if not use_free_search:
+        if not check_api_key():
+            print("\n⚠️  未设置 API 密钥，将使用免费搜索")
+            use_free_search = True
     
     # 询问处理方式
     print("\n请选择处理方式：")
     print("1. 仅显示链接和描述（快速）")
-    print("2. 抓取完整内容（较慢，但可以保存）")
-    print("3. 提取文章信息（仅标题、作者、时间、正文）⭐")
-    mode_choice = input("请选择 (1/2/3, 默认: 1): ").strip() or "1"
+    if not use_free_search:
+        print("2. 抓取完整内容（较慢，但可以保存）")
+        print("3. 提取文章信息（仅标题、作者、时间、正文）⭐")
+        mode_choice = input("请选择 (1/2/3, 默认: 1): ").strip() or "1"
+    else:
+        print("2. 提取文章信息（仅标题、作者、时间、正文）⭐")
+        mode_choice = input("请选择 (1/2, 默认: 1): ").strip() or "1"
+        if mode_choice == "2":
+            mode_choice = "3"  # 映射到提取文章信息
     
     print(f"\n正在搜索: {query}")
+    if use_free_search:
+        print("💡 使用免费搜索（不需要 API 密钥）")
     print("请稍候...")
     
     try:
-        client = FirecrawlClient()
-        
-        # 先获取搜索结果（不抓取内容）
-        results = client.搜索网页(query, 结果数量=limit, 抓取内容=False)
+        # 创建客户端（免费搜索不需要 API 密钥）
+        if use_free_search:
+            client = FirecrawlClient(api_key=None)
+            # 使用免费搜索
+            results = client.搜索网页(query, 结果数量=limit, 使用免费搜索=True, 抓取内容=False)
+        else:
+            # 使用 Firecrawl API
+            client = FirecrawlClient()
+            # 先获取搜索结果（不抓取内容）
+            results = client.搜索网页(query, 结果数量=limit, 抓取内容=False)
         
         print("\n" + "=" * 60)
         print(f"✓ 找到 {len(results)} 个结果")
@@ -340,7 +381,12 @@ def search_web():
             return
         
         elif mode_choice == "2":
-            # 抓取完整内容
+            # 抓取完整内容（仅 Firecrawl API 支持）
+            if use_free_search:
+                print("\n⚠️  免费搜索不支持抓取完整内容")
+                print("请使用 Firecrawl API 搜索（选项 2）或选择提取文章信息（选项 3）")
+                return
+            
             print(f"\n正在抓取 {len(results)} 个网页的完整内容...")
             print("这可能需要一些时间，请稍候...")
             
@@ -506,7 +552,11 @@ def search_web():
                 print(f"[{i}/{len(results)}] 提取中... (已保存: {saved_count}, 预计剩余: {int(estimated_time)}秒) {url[:50]}...")
                 
                 try:
-                    article = client.提取文章信息(url)
+                    # 创建客户端（使用本地提取，不需要 API 密钥）
+                    if 'client' not in locals():
+                        client = FirecrawlClient(api_key=None)
+                    # 使用本地提取（免费，不需要 API 密钥）
+                    article = client.提取文章信息(url, 使用本地提取=True)
                     
                     # 立即保存
                     success, result_info = save_article({
@@ -584,7 +634,34 @@ def search_web():
                 print(f"   共 {saved_count} 个文件")
     
     except Exception as e:
-        print(f"\n❌ 错误: {e}")
+        error_msg = str(e)
+        # 检查是否是库未安装的错误
+        if "未安装" in error_msg or "not installed" in error_msg.lower() or "ModuleNotFoundError" in error_msg or "DuckDuckGo 搜索库未安装" in error_msg:
+            print(f"\n{'=' * 60}")
+            print("❌ 缺少必要的库")
+            print("=" * 60)
+            
+            if "duckduckgo-search" in error_msg.lower() or "DuckDuckGo" in error_msg:
+                print("\n需要安装: duckduckgo-search")
+                print("\n安装命令:")
+                print("  pip install duckduckgo-search")
+                print("\n或者在虚拟环境中:")
+                print("  source venv/bin/activate")
+                print("  pip install duckduckgo-search")
+            elif "readability" in error_msg.lower() or "本地提取" in error_msg:
+                print("\n需要安装本地提取库:")
+                print("  readability-lxml beautifulsoup4 html2text python-dateutil lxml")
+                print("\n安装命令:")
+                print("  pip install readability-lxml beautifulsoup4 html2text python-dateutil lxml")
+                print("\n或者在虚拟环境中:")
+                print("  source venv/bin/activate")
+                print("  pip install readability-lxml beautifulsoup4 html2text python-dateutil lxml")
+            
+            print("\n或者安装所有依赖:")
+            print("  pip install -r requirements.txt")
+            print("=" * 60)
+        else:
+            print(f"\n❌ 错误: {error_msg}")
 
 
 def get_site_map():
@@ -678,6 +755,8 @@ Firecrawl 友好客户端使用说明
 2. 提取文章信息 ⭐
    - 仅提取：标题、作者、发表时间、正文
    - 自动去除无关信息（导航栏、页脚、广告等）
+   - 支持本地提取（免费，不需要 API 密钥）⭐
+   - 也支持 Firecrawl API 提取（需要 API 密钥，更准确）
    - 适合提取新闻、博客等文章内容
 
 3. 爬取整个网站
@@ -685,13 +764,17 @@ Firecrawl 友好客户端使用说明
    - 设置最多爬取页面数
    - 可以保存所有页面
 
-4. 搜索网页
+4. 搜索网页 ⭐
    - 输入搜索关键词
    - 设置返回结果数量
+   - 选择搜索方式：
+     * 免费搜索（DuckDuckGo，不需要 API 密钥）⭐
+     * Firecrawl API 搜索（需要 API 密钥，功能更强大）
    - 选择处理方式：
      * 仅显示链接和描述（快速）
-     * 抓取完整内容（可保存）
+     * 抓取完整内容（仅 Firecrawl API，可保存）
      * 提取文章信息（仅标题、作者、时间、正文）⭐
+       - 使用本地提取（免费，不需要 API 密钥）
    - 可以保存所有结果到文件
    - 保存位置: search_results/ 目录
 
@@ -708,10 +791,12 @@ Firecrawl 友好客户端使用说明
 7. 设置 API 密钥
    - 设置 Firecrawl API 密钥
    - 获取密钥: https://firecrawl.dev
+   - 注意：搜索功能可以使用免费搜索（不需要 API 密钥）
 
 更多信息:
 - 查看 firecrawl_client_README.md
 - 查看 firecrawl_client_examples.py
+- 查看 免费搜索使用说明.md（了解如何使用免费搜索）
 """)
 
 

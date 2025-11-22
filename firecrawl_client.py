@@ -31,8 +31,45 @@ Firecrawl 友好客户端
 
 import os
 import sys
+import re
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
+
+# 尝试导入 DuckDuckGo 搜索库（可选，用于免费搜索）
+# 新版本使用 ddgs，旧版本使用 duckduckgo_search
+DDGS = None
+DDG_AVAILABLE = False
+try:
+    # 优先使用新版本 ddgs
+    from ddgs import DDGS
+    DDG_AVAILABLE = True
+except ImportError:
+    try:
+        # 回退到旧版本 duckduckgo_search
+        from duckduckgo_search import DDGS
+        DDG_AVAILABLE = True
+    except ImportError:
+        DDG_AVAILABLE = False
+
+# 尝试导入本地文章提取库（可选，用于免费提取）
+try:
+    from readability.readability import Document as ReadabilityDocument
+    from bs4 import BeautifulSoup
+    import html2text
+    from dateutil import parser as date_parser
+    import requests
+    LOCAL_EXTRACT_AVAILABLE = True
+except ImportError:
+    try:
+        # 尝试另一种导入方式
+        from readability import Document as ReadabilityDocument
+        from bs4 import BeautifulSoup
+        import html2text
+        from dateutil import parser as date_parser
+        import requests
+        LOCAL_EXTRACT_AVAILABLE = True
+    except ImportError:
+        LOCAL_EXTRACT_AVAILABLE = False
 
 try:
     from firecrawl import Firecrawl
@@ -92,25 +129,24 @@ class FirecrawlClient:
         if api_key is None:
             api_key = os.getenv("FIRECRAWL_API_KEY")
         
-        if not api_key:
-            raise ValueError(
-                "未找到 API 密钥！\n"
-                "请通过以下方式之一提供 API 密钥：\n"
-                "1. 作为参数传入：FirecrawlClient(api_key='your-key')\n"
-                "2. 设置环境变量：export FIRECRAWL_API_KEY='your-key'\n"
-                "3. 在 .env 文件中设置：FIRECRAWL_API_KEY=your-key\n\n"
-                "获取 API 密钥：https://firecrawl.dev"
-            )
+        self.api_key = api_key
+        self.timeout = timeout
+        self.max_retries = max_retries
         
+        # 如果没有 API 密钥，只初始化用于免费搜索（不初始化 Firecrawl 客户端）
+        if not api_key:
+            self._client = None
+            print(f"💡 未设置 API 密钥，仅可使用免费搜索功能")
+            print(f"   如需使用完整功能，请设置 API 密钥：https://firecrawl.dev")
+            return
+        
+        # 有 API 密钥时，初始化 Firecrawl 客户端
         try:
             # Firecrawl 只接受 api_key 和 api_url 参数
             self._client = Firecrawl(
                 api_key=api_key,
                 api_url=api_url
             )
-            self.api_key = api_key
-            self.timeout = timeout
-            self.max_retries = max_retries
             print(f"✓ Firecrawl 客户端初始化成功")
         except Exception as e:
             raise RuntimeError(f"初始化 Firecrawl 客户端失败: {str(e)}")
@@ -146,6 +182,9 @@ class FirecrawlClient:
         """
         if 格式 is None:
             格式 = ["markdown"]
+        
+        if not self._client:
+            raise ValueError("此功能需要 API 密钥。请设置 FIRECRAWL_API_KEY 或使用免费搜索功能。")
         
         try:
             print(f"正在抓取: {url}")
@@ -209,6 +248,9 @@ class FirecrawlClient:
         if 格式 is None:
             格式 = ["markdown"]
         
+        if not self._client:
+            raise ValueError("此功能需要 API 密钥。请设置 FIRECRAWL_API_KEY。")
+        
         try:
             print(f"开始爬取网站: {url}")
             print(f"最大页面数: {最大页面数}")
@@ -252,6 +294,7 @@ class FirecrawlClient:
         查询: str,
         结果数量: int = 5,
         抓取内容: bool = False,
+        使用免费搜索: bool = False,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
@@ -260,17 +303,28 @@ class FirecrawlClient:
         参数:
             查询: 搜索关键词
             结果数量: 返回的结果数量
-            抓取内容: 是否抓取搜索结果的内容
+            抓取内容: 是否抓取搜索结果的内容（仅 Firecrawl API）
+            使用免费搜索: 如果为 True，使用 DuckDuckGo 免费搜索（不需要 API 密钥）
             **kwargs: 其他可选参数
         
         返回:
             搜索结果列表，每个结果包含 URL、标题、描述等信息
         
         示例:
+            # 使用 Firecrawl API 搜索（需要 API 密钥）
             results = client.搜索网页("Python 教程", 结果数量=10)
-            for result in results:
-                print(f"{result['title']}: {result['url']}")
+            
+            # 使用免费搜索（不需要 API 密钥）
+            results = client.搜索网页("Python 教程", 结果数量=10, 使用免费搜索=True)
         """
+        # 如果使用免费搜索，使用 DuckDuckGo
+        if 使用免费搜索:
+            return self._免费搜索(查询, 结果数量)
+        
+        # 否则使用 Firecrawl API
+        if not self._client:
+            raise ValueError("Firecrawl API 搜索需要 API 密钥。请设置 FIRECRAWL_API_KEY 或使用 使用免费搜索=True。")
+        
         try:
             print(f"正在搜索: {查询}")
             
@@ -306,6 +360,201 @@ class FirecrawlClient:
             error_msg = str(e)
             raise RuntimeError(f"搜索失败: {error_msg}")
     
+    def _包含中文(self, 文本: str) -> bool:
+        if not 文本:
+            return False
+        return any('\u4e00' <= ch <= '\u9fff' for ch in 文本)
+    
+    def _结果相关(self, 查询: str, result: Dict[str, Any]) -> bool:
+        if not 查询:
+            return True
+        title = result.get('title') or ''
+        description = result.get('description') or ''
+        combined = f"{title} {description}".lower()
+        url = (result.get('url') or '').lower()
+        has_chinese = self._包含中文(查询)
+        
+        tokens = [token.lower() for token in re.split(r'\s+', 查询) if token.strip()]
+        if not tokens:
+            tokens = [查询.lower()]
+        
+        for token in tokens:
+            if token and token in combined:
+                return True
+            if token and token in url:
+                return True
+        
+        if has_chinese:
+            joined = 查询.replace(' ', '')
+            if joined and joined in title + description:
+                return True
+        
+        return False
+    
+    def _过滤搜索结果(self, 查询: str, 原始结果: List[Dict[str, Any]], 目标数量: int) -> List[Dict[str, Any]]:
+        if not 原始结果:
+            return []
+        
+        filtered: List[Dict[str, Any]] = []
+        fallback: List[Dict[str, Any]] = []
+        seen_urls = set()
+        
+        for item in 原始结果:
+            url = item.get('url')
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            
+            if self._结果相关(查询, item):
+                filtered.append(item)
+            else:
+                fallback.append(item)
+        
+        if len(filtered) < 目标数量:
+            needed = 目标数量 - len(filtered)
+            filtered.extend(fallback[:needed])
+        
+        return filtered[:目标数量]
+    
+    def _清理文本(self, 文本: str) -> str:
+        if not 文本:
+            return ""
+        cleaned = 文本.replace("\u00a0", " ")
+        cleaned = re.sub(r"\r\n?", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        return cleaned.strip()
+    
+    def _免费搜索(
+        self,
+        查询: str,
+        结果数量: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        使用 DuckDuckGo 进行免费搜索（不需要 API 密钥）
+        
+        参数:
+            查询: 搜索关键词
+            结果数量: 返回的结果数量
+        
+        返回:
+            搜索结果列表
+        """
+        if not DDG_AVAILABLE:
+            error_msg = (
+                "DuckDuckGo 搜索库未安装。\n"
+                "请运行以下命令安装：\n"
+                "  pip install ddgs\n"
+                "  或者（旧版本）: pip install duckduckgo-search\n"
+                "\n"
+                "或者在虚拟环境中：\n"
+                "  source venv/bin/activate\n"
+                "  pip install ddgs\n"
+                "\n"
+                "或者安装所有依赖：\n"
+                "  pip install -r requirements.txt"
+            )
+            raise RuntimeError(error_msg)
+        
+        try:
+            print(f"正在使用 DuckDuckGo 免费搜索: {查询}")
+            print("💡 提示：这是免费搜索，不需要 API 密钥")
+            
+            raw_results: List[Dict[str, Any]] = []
+            max_retries = 3
+            retry_count = 0
+            has_chinese = self._包含中文(查询)
+            region = 'cn-zh' if has_chinese else 'wt-wt'
+            fetch_limit = max(结果数量 * 3, 15)
+            
+            while retry_count < max_retries:
+                try:
+                    with DDGS() as ddgs:
+                        count = 0
+                        search_iter = ddgs.text(
+                            查询,
+                            max_results=fetch_limit,
+                            region=region,
+                            safesearch='Off'
+                        )
+                        
+                        for r in search_iter:
+                            if r is None:
+                                continue
+                            
+                            # 处理不同的返回格式（兼容新旧版本）
+                            url = r.get('href') or r.get('url') or ''
+                            title = r.get('title') or r.get('text') or ''
+                            description = r.get('body') or r.get('description') or r.get('snippet') or ''
+                            
+                            # 只添加有效的 URL
+                            if url and url.startswith(('http://', 'https://')):
+                                raw_results.append({
+                                    'url': url,
+                                    'title': title or '无标题',
+                                    'description': description or '',
+                                })
+                                count += 1
+                    
+                    # 如果找到了结果，退出重试循环
+                    if len(raw_results) > 0:
+                        break
+                    else:
+                        # 如果没有结果，可能是搜索失败，尝试重试
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"⚠️  未找到结果，正在重试 ({retry_count}/{max_retries})...")
+                            import time
+                            time.sleep(2)  # 等待2秒后重试
+                        else:
+                            break
+                        
+                except StopIteration:
+                    # 迭代器结束，这是正常的
+                    break
+                except Exception as retry_error:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"⚠️  搜索失败，正在重试 ({retry_count}/{max_retries})...")
+                        import time
+                        time.sleep(2)  # 等待2秒后重试
+                    else:
+                        raise retry_error
+            
+            if len(raw_results) == 0:
+                raise RuntimeError(
+                    "未能获取到搜索结果。\n"
+                    "可能的原因：\n"
+                    "1. 网络连接问题\n"
+                    "2. DuckDuckGo 服务暂时不可用\n"
+                    "3. 搜索关键词可能被限制\n"
+                    "\n"
+                    "建议：\n"
+                    "1. 检查网络连接\n"
+                    "2. 稍后重试\n"
+                    "3. 尝试使用不同的搜索关键词"
+                )
+            
+            filtered_results = self._过滤搜索结果(查询, raw_results, 结果数量)
+            if len(filtered_results) < 结果数量:
+                print(f"⚠️  仅找到 {len(filtered_results)} 个相关结果（目标 {结果数量} 个）")
+            print(f"✓ 找到 {len(filtered_results)} 个结果")
+            return filtered_results
+            
+        except RuntimeError:
+            # 重新抛出 RuntimeError（已经包含友好的错误信息）
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            raise RuntimeError(
+                f"免费搜索失败: {error_msg}\n"
+                "\n"
+                "建议：\n"
+                "1. 检查网络连接\n"
+                "2. 更新搜索库: pip install --upgrade ddgs\n"
+                "3. 稍后重试"
+            )
+    
     def 获取网站地图(
         self,
         url: str,
@@ -330,6 +579,9 @@ class FirecrawlClient:
             for link in links:
                 print(f"{link['title']}: {link['url']}")
         """
+        if not self._client:
+            raise ValueError("此功能需要 API 密钥。请设置 FIRECRAWL_API_KEY。")
+        
         try:
             print(f"正在获取网站地图: {url}")
             
@@ -391,6 +643,9 @@ class FirecrawlClient:
         if 格式 is None:
             格式 = ["markdown"]
         
+        if not self._client:
+            raise ValueError("此功能需要 API 密钥。请设置 FIRECRAWL_API_KEY。")
+        
         try:
             print(f"开始批量抓取 {len(urls)} 个网页...")
             
@@ -439,6 +694,7 @@ class FirecrawlClient:
     def 提取文章信息(
         self,
         url: str,
+        使用本地提取: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -446,18 +702,29 @@ class FirecrawlClient:
         
         参数:
             url: 要提取的文章 URL
+            使用本地提取: 如果为 True，使用本地提取（不需要 API 密钥）
             **kwargs: 其他可选参数
         
         返回:
             包含标题、作者、发表时间、主文的字典
         
         示例:
+            # 使用本地提取（不需要 API 密钥）
+            article = client.提取文章信息("https://example.com/article", 使用本地提取=True)
+            
+            # 使用 Firecrawl API 提取（需要 API 密钥，更准确）
             article = client.提取文章信息("https://example.com/article")
-            print(f"标题: {article['title']}")
-            print(f"作者: {article['author']}")
-            print(f"发表时间: {article['publish_time']}")
-            print(f"主文: {article['content']}")
         """
+        # 如果使用本地提取，使用本地方法
+        if 使用本地提取:
+            return self._本地提取文章信息(url)
+        
+        # 否则使用 Firecrawl API（需要 API 密钥）
+        if not self._client:
+            # 如果没有 API 密钥，尝试使用本地提取
+            print("💡 未设置 API 密钥，将使用本地提取（免费）")
+            return self._本地提取文章信息(url)
+        
         # 定义提取的 JSON Schema
         schema = {
             "type": "object",
@@ -493,7 +760,7 @@ class FirecrawlClient:
         )
         
         try:
-            print(f"正在提取文章信息: {url}")
+            print(f"正在使用 Firecrawl API 提取文章信息: {url}")
             print("这可能需要一些时间，请稍候...")
             
             # 创建 ScrapeOptions 对象
@@ -534,7 +801,238 @@ class FirecrawlClient:
         
         except Exception as e:
             error_msg = str(e)
-            raise RuntimeError(f"提取文章信息失败: {error_msg}")
+            # 如果 API 提取失败，尝试本地提取
+            print(f"⚠️  API 提取失败: {error_msg}")
+            print("💡 尝试使用本地提取...")
+            return self._本地提取文章信息(url)
+    
+    def _本地提取文章信息(self, url: str) -> Dict[str, Any]:
+        """
+        使用本地方法提取文章信息（不需要 API 密钥）
+        
+        参数:
+            url: 要提取的文章 URL
+        
+        返回:
+            包含标题、作者、发表时间、主文的字典
+        """
+        if not LOCAL_EXTRACT_AVAILABLE:
+            error_msg = (
+                "本地提取库未安装。\n"
+                "请运行以下命令安装：\n"
+                "  pip install readability-lxml beautifulsoup4 html2text python-dateutil lxml\n"
+                "\n"
+                "或者在虚拟环境中：\n"
+                "  source venv/bin/activate\n"
+                "  pip install readability-lxml beautifulsoup4 html2text python-dateutil lxml\n"
+                "\n"
+                "或者安装所有依赖：\n"
+                "  pip install -r requirements.txt"
+            )
+            raise RuntimeError(error_msg)
+        
+        try:
+            print(f"正在使用本地方法提取文章信息: {url}")
+            print("💡 提示：这是本地提取，不需要 API 密钥")
+            
+            # 下载网页（带重试机制）
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+            
+            max_retries = 3
+            retry_count = 0
+            html = None
+            
+            while retry_count < max_retries:
+                try:
+                    response = requests.get(
+                        url,
+                        headers=headers,
+                        timeout=30,
+                        allow_redirects=True
+                    )
+                    response.raise_for_status()
+                    
+                    encoding = response.encoding
+                    if not encoding or encoding.lower() == 'iso-8859-1':
+                        encoding = response.apparent_encoding or 'utf-8'
+                    response.encoding = encoding or 'utf-8'
+                    html = response.text or response.content.decode(response.encoding, errors='replace')
+                    break
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 403:
+                        raise RuntimeError(f"访问被拒绝 (403): 该网站可能阻止了自动访问。\nURL: {url}")
+                    elif e.response.status_code == 404:
+                        raise RuntimeError(f"页面不存在 (404): {url}")
+                    elif e.response.status_code >= 500:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"  ⚠️  服务器错误，正在重试 ({retry_count}/{max_retries})...")
+                            import time
+                            time.sleep(2)
+                            continue
+                        else:
+                            raise RuntimeError(f"服务器错误 ({e.response.status_code}): {url}")
+                    else:
+                        raise RuntimeError(f"HTTP 错误 ({e.response.status_code}): {url}")
+                except requests.exceptions.ConnectionError as e:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"  ⚠️  连接错误，正在重试 ({retry_count}/{max_retries})...")
+                        import time
+                        time.sleep(2)
+                        continue
+                    else:
+                        raise RuntimeError(f"连接失败: 无法连接到服务器。\nURL: {url}\n错误: {str(e)}")
+                except requests.exceptions.Timeout:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"  ⚠️  请求超时，正在重试 ({retry_count}/{max_retries})...")
+                        import time
+                        time.sleep(2)
+                        continue
+                    else:
+                        raise RuntimeError(f"请求超时: {url}")
+            
+            if html is None:
+                raise RuntimeError("无法获取网页内容")
+            
+            # 使用 readability 提取主要内容
+            # 修复 Pydantic 兼容性问题
+            try:
+                # 方式1：直接传递 HTML 字符串（最常见）
+                doc = ReadabilityDocument(html)
+            except (TypeError, ValueError) as e:
+                # 如果失败，尝试使用 lxml 解析
+                try:
+                    from lxml import html as lxml_html
+                    doc_html = lxml_html.fromstring(html.encode('utf-8'))
+                    doc = ReadabilityDocument(doc_html)
+                except Exception as e2:
+                    # 如果还是失败，尝试传递字节
+                    try:
+                        doc = ReadabilityDocument(html.encode('utf-8'))
+                    except Exception as e3:
+                        raise RuntimeError(
+                            f"无法解析 HTML 内容。\n"
+                            f"错误1: {str(e)}\n"
+                            f"错误2: {str(e2)}\n"
+                            f"错误3: {str(e3)}\n"
+                            f"建议：检查 HTML 内容是否有效"
+                        )
+            
+            title = self._清理文本(doc.title() if hasattr(doc, 'title') else "")
+            content_html = doc.summary() if hasattr(doc, 'summary') else ""
+            
+            # 创建 BeautifulSoup 对象（用于后续提取）
+            original_soup = BeautifulSoup(html, 'lxml')
+            
+            # 如果 readability 没有提取到内容，使用备用方法
+            if not content_html or len(content_html.strip()) < 50:
+                fallback_soup = BeautifulSoup(html, 'lxml')
+                for script in fallback_soup(["script", "style", "nav", "header", "footer", "aside"]):
+                    script.decompose()
+                content_html = str(fallback_soup.find('body') or fallback_soup)
+            
+            # 解析 HTML
+            soup = BeautifulSoup(content_html, 'lxml')
+            
+            # 转换为 Markdown
+            h = html2text.HTML2Text()
+            h.ignore_links = False
+            h.ignore_images = False
+            h.body_width = 0
+            content = h.handle(str(soup))
+            content = self._清理文本(content)
+            
+            # 提取作者（尝试多种常见的 meta 标签和属性）
+            author = ""
+            author_selectors = [
+                ('meta', {'name': 'author'}),
+                ('meta', {'property': 'article:author'}),
+                ('meta', {'property': 'og:article:author'}),
+                ('meta', {'name': 'twitter:creator'}),
+                ('span', {'class': 'author'}),
+                ('span', {'class': 'by-author'}),
+                ('div', {'class': 'author'}),
+                ('a', {'rel': 'author'}),
+            ]
+            for tag_name, attrs in author_selectors:
+                tags = original_soup.find_all(tag_name, attrs)
+                if tags:
+                    for tag in tags:
+                        if tag_name == 'meta':
+                            author = tag.get('content', '')
+                        else:
+                            author = tag.get_text(strip=True)
+                        if author:
+                            break
+                if author:
+                    break
+            
+            # 提取发表时间（尝试多种常见的 meta 标签和属性）
+            publish_time = ""
+            time_selectors = [
+                ('meta', {'property': 'article:published_time'}),
+                ('meta', {'property': 'article:modified_time'}),
+                ('meta', {'name': 'publishdate'}),
+                ('meta', {'name': 'pubdate'}),
+                ('time', {'datetime': True}),
+                ('time', {'pubdate': True}),
+            ]
+            
+            for tag_name, attrs in time_selectors:
+                tags = original_soup.find_all(tag_name, attrs)
+                if tags:
+                    for tag in tags:
+                        if tag_name == 'meta':
+                            time_str = tag.get('content', '')
+                        else:
+                            time_str = tag.get('datetime', '')
+                        
+                        if time_str:
+                            try:
+                                # 尝试解析日期
+                                dt = date_parser.parse(time_str)
+                                publish_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                            except:
+                                publish_time = time_str
+                            break
+                if publish_time:
+                    break
+            
+            # 清理内容
+            content = content.strip()
+            if not content:
+                # 如果 readability 没有提取到内容，尝试提取 body
+                body = original_soup.find('body')
+                if body:
+                    # 移除脚本和样式
+                    for script in body(["script", "style", "nav", "header", "footer", "aside"]):
+                        script.decompose()
+                    content = h.handle(str(body))
+                    content = self._清理文本(content)
+            
+            result = {
+                "title": title,
+                "author": author.strip() if author else "",
+                "publish_time": publish_time.strip() if publish_time else "",
+                "content": content,
+                "url": url
+            }
+            
+            print("✓ 本地提取成功")
+            return result
+            
+        except Exception as e:
+            error_msg = str(e)
+            raise RuntimeError(f"本地提取失败: {error_msg}")
 
 
 class 网页结果:
